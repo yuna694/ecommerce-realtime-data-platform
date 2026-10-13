@@ -1,0 +1,212 @@
+name: ecommerce-rt
+
+x-warehouse-env: &warehouse-env
+  WAREHOUSE_HOST: warehouse
+  WAREHOUSE_PORT: "5432"
+  WAREHOUSE_DB: warehouse
+  WAREHOUSE_USER: ${WAREHOUSE_USER:-de}
+  WAREHOUSE_PASSWORD: ${WAREHOUSE_PASSWORD:-de_password}
+
+x-spark: &spark
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.spark
+  image: ecommerce-rt/spark:latest
+  restart: unless-stopped
+  environment:
+    <<: *warehouse-env
+    KAFKA_BOOTSTRAP: kafka:9092
+    LAKE_PATH: /lake
+    SPARK_DRIVER_MEMORY: 1g
+  volumes:
+    - lake:/lake
+    - ./spark_jobs:/opt/project/spark_jobs:ro
+  depends_on:
+    init-perms:
+      condition: service_completed_successfully
+
+x-airflow: &airflow
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.airflow
+  image: ecommerce-rt/airflow:latest
+  environment: &airflow-env
+    <<: *warehouse-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    AIRFLOW__WEBSERVER__SECRET_KEY: dev-only-secret-change-me
+    LAKE_PATH: /lake
+    SPARK_DRIVER_MEMORY: 1g
+    KAFKA_BOOTSTRAP: kafka:9092
+  volumes:
+    - lake:/lake
+    - ./airflow/dags:/opt/airflow/dags
+    - ./spark_jobs:/opt/project/spark_jobs:ro
+    - ./dbt:/opt/project/dbt
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+    init-perms:
+      condition: service_completed_successfully
+
+services:
+  # ------------------------------------------------------------------ infra
+  init-perms:
+    image: busybox:1.36
+    command: ["sh", "-c", "chmod -R 777 /lake"]
+    volumes:
+      - lake:/lake
+
+  kafka:
+    image: apache/kafka:3.8.0
+    restart: unless-stopped
+    ports:
+      - "29092:29092"   # for tools running on your Windows host
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 24
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka-init:
+    image: apache/kafka:3.8.0
+    depends_on: [kafka]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null 2>&1; do
+          echo "waiting for kafka..."; sleep 2
+        done
+        for t in orders payments clicks; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic $$t --partitions 3 --replication-factor 1
+        done
+        echo "topics ready"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on: [kafka]
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+
+  warehouse:
+    image: postgres:16
+    restart: unless-stopped
+    ports:
+      - "5432:5432"     # Power BI connects here
+    environment:
+      POSTGRES_DB: warehouse
+      POSTGRES_USER: ${WAREHOUSE_USER:-de}
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD:-de_password}
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WAREHOUSE_USER:-de} -d warehouse"]
+      interval: 5s
+      retries: 20
+
+  # ------------------------------------------------------------------ producer
+  generator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.generator
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      SESSIONS_PER_SECOND: ${SESSIONS_PER_SECOND:-3}
+
+  # ------------------------------------------------------------------ streaming (Spark)
+  bronze-stream:
+    <<: *spark
+    command: ["python", "bronze_stream.py"]
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+
+  silver-stream:
+    <<: *spark
+    command: ["python", "silver_stream.py"]
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+      bronze-stream:
+        condition: service_started
+
+  realtime-kpis:
+    <<: *spark
+    command: ["python", "realtime_kpis.py"]
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      warehouse:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ orchestration (Airflow)
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      retries: 20
+
+  airflow-init:
+    <<: *airflow
+    command: >
+      bash -c "airflow db migrate &&
+               airflow users create --username admin --password admin
+               --firstname Admin --lastname User --role Admin --email admin@example.com || true"
+
+  airflow-webserver:
+    <<: *airflow
+    restart: unless-stopped
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow
+    restart: unless-stopped
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      warehouse:
+        condition: service_healthy
+
+volumes:
+  lake:
+  kafka-data:
+  warehouse-data:
+  airflow-db-data:

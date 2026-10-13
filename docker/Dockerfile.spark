@@ -1,0 +1,16 @@
+FROM python:3.11-slim-bookworm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openjdk-17-jre-headless procps \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir pyspark==3.5.3 delta-spark==3.2.0 psycopg2-binary==2.9.9
+
+# Pre-download the Delta / Kafka / Postgres jars at build time so containers start fast
+# (and don't need Maven Central at runtime).
+RUN python -c "from pyspark.sql import SparkSession; \
+s = SparkSession.builder.master('local[1]').config('spark.jars.packages', \
+'io.delta:delta-spark_2.12:3.2.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.postgresql:postgresql:42.7.3').getOrCreate(); s.stop()"
+
+WORKDIR /opt/project/spark_jobs
+ENV PYTHONUNBUFFERED=1

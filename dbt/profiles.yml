@@ -1,0 +1,14 @@
+# Connection settings come from environment variables so the same project works
+# inside Airflow (host "warehouse") and from your laptop (WAREHOUSE_HOST=localhost).
+ecommerce:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('WAREHOUSE_HOST', 'warehouse') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '5432') | as_number }}"
+      user: "{{ env_var('WAREHOUSE_USER', 'de') }}"
+      password: "{{ env_var('WAREHOUSE_PASSWORD', 'de_password') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'warehouse') }}"
+      schema: analytics
+      threads: 2

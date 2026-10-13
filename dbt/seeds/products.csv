@@ -1,0 +1,21 @@
+product_id,product_name,category,list_price
+P001,Wireless Earbuds,Electronics,349.0
+P002,Smartphone Case,Electronics,89.0
+P003,Power Bank 20000mAh,Electronics,299.0
+P004,Bluetooth Speaker,Electronics,459.0
+P005,Smart Watch,Electronics,799.0
+P006,Running Shoes,Sports,599.0
+P007,Yoga Mat,Sports,149.0
+P008,Water Bottle,Sports,59.0
+P009,Gym Backpack,Sports,229.0
+P010,Cotton T-Shirt,Fashion,99.0
+P011,Denim Jacket,Fashion,389.0
+P012,Leather Wallet,Fashion,179.0
+P013,Sunglasses,Fashion,249.0
+P014,Desk Lamp,Home,129.0
+P015,Coffee Maker,Home,549.0
+P016,Throw Pillow,Home,69.0
+P017,Argan Oil,Beauty,119.0
+P018,Face Cream,Beauty,139.0
+P019,Perfume 50ml,Beauty,429.0
+P020,Hair Dryer,Beauty,259.0

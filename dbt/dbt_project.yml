@@ -1,0 +1,21 @@
+name: ecommerce
+version: "1.0.0"
+config-version: 2
+profile: ecommerce
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+
+models:
+  ecommerce:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  ecommerce:
+    products:
+      +column_types:
+        list_price: "numeric(12,2)"

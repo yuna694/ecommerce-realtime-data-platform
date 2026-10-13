@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: lake_gold
+    description: Latest-state tables produced by the Spark gold job (Delta -> Postgres).
+    schema: lake_gold
+    loaded_at_field: placed_at
+    freshness:
+      warn_after: {count: 1, period: hour}
+    tables:
+      - name: orders_current
+      - name: order_items
+        loaded_at_field: "order_date::timestamp"
+      - name: payments_current
+        loaded_at_field: last_payment_at
+      - name: quarantine_summary
+        loaded_at_field: "quarantine_date::timestamp"
